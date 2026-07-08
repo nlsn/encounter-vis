@@ -337,7 +337,7 @@ class EncounterAnimation:
     def _update_frame(self, frame_no):
         t = self.frame_t[frame_no]
         speed = self.frame_speed[frame_no]
-        i = self._idx(t)
+        i = self._idx(t)   # grid index for trail slices and chart cursors
         (x0, x1, y0, y1), view_w = self.camera.view(t)
         self.ax_map.set_xlim(x0, x1)
         self.ax_map.set_ylim(y0, y1)
@@ -345,6 +345,12 @@ class EncounterAnimation:
         for txt, max_w in self.landmark_labels:
             txt.set_visible(view_w <= max_w)
         glyph_size = view_w / np.cos(np.radians(38.85)) * 0.011
+
+        # Sub-grid interpolation so glyphs move smoothly during slow-mo
+        # (slow-mo advances <1 DT per frame, so the grid index is the same
+        # for several consecutive frames, causing visible snapping).
+        def _ip(arr):
+            return float(np.interp(t, self.tq, arr))
 
         # aircraft
         for a in self.aircraft:
@@ -355,14 +361,15 @@ class EncounterAnimation:
             # Raw ADS-B fix dots (show positions of actual data updates)
             dot_mask = (a.track.t >= self.t0) & (a.track.t <= t)
             a.trail_dots.set_data(a.track_x[dot_mask], a.track_y[dot_mask])
-            if np.isfinite(a.x[i]):
+            ax, ay = _ip(a.x), _ip(a.y)
+            if np.isfinite(ax):
                 a.glyph.set_visible(True)
                 a.label.set_visible(True)
-                a.glyph.set_xy(_triangle(a.x[i], a.y[i], a.hdg[i],
+                a.glyph.set_xy(_triangle(ax, ay, _ip(a.hdg),
                                          glyph_size * a.marker_scale))
-                a.label.xy = (a.x[i], a.y[i])
-                alt = a.alt_ft[i]
-                gs = a.gs_kt[i]
+                a.label.xy = (ax, ay)
+                alt = _ip(a.alt_ft)
+                gs = _ip(a.gs_kt)
                 if alt < 80 and (not np.isfinite(gs) or gs < 60):
                     alt_s = "gnd"
                 else:
@@ -373,18 +380,20 @@ class EncounterAnimation:
                 a.label.set_visible(False)
 
         # range line to nearest F-5
+        ref_x, ref_y = _ip(self.ref.x), _ip(self.ref.y)
         best = None
         for a in self.others:
-            hsep = self.sep_h[a.reg][i]
+            hsep = float(np.interp(t, self.tq, self.sep_h[a.reg]))
             if np.isfinite(hsep) and (best is None or hsep < best[0]):
                 best = (hsep, a)
-        show = best is not None and best[0] < 8000 and np.isfinite(self.ref.x[i])
+        show = best is not None and best[0] < 8000 and np.isfinite(ref_x)
         self.range_line.set_visible(show)
         self.range_text.set_visible(show)
         if show:
             hsep, a = best
-            self.range_line.set_data([self.ref.x[i], a.x[i]], [self.ref.y[i], a.y[i]])
-            mx, my = 0.5 * (self.ref.x[i] + a.x[i]), 0.5 * (self.ref.y[i] + a.y[i])
+            ax, ay = _ip(a.x), _ip(a.y)
+            self.range_line.set_data([ref_x, ax], [ref_y, ay])
+            mx, my = 0.5 * (ref_x + ax), 0.5 * (ref_y + ay)
             self.range_text.xy = (mx, my)
             self.range_text.set_position((mx, my + 0.03 * (y1 - y0)))
             self.range_text.set_text(f"{hsep / M_PER_NM:.2f} NM")
@@ -398,8 +407,8 @@ class EncounterAnimation:
         self.clock_text.set_text(_fmt_clock(t))
         self.speed_text.set_text("paused" if speed == 0 else f"playback speed {speed:g}×")
         for row, a in zip(self.readout_rows, self.aircraft):
-            alt = a.alt_ft[i]
-            gs = a.gs_kt[i]
+            alt = _ip(a.alt_ft)
+            gs = _ip(a.gs_kt)
             pfx = f"{a.callsign:<10}{a.reg:<9}{a.icao:<8}{a.actype:<6}"
             if not np.isfinite(alt):
                 row.set_text(pfx + f"{'—':>7}{'—':>7}{'—':>8}")
@@ -409,7 +418,7 @@ class EncounterAnimation:
             if a.is_ref:
                 d_s = "—"
             else:
-                hsep = self.sep_h[a.reg][i]
+                hsep = float(np.interp(t, self.tq, self.sep_h[a.reg]))
                 d_s = f"{hsep / M_PER_NM:.2f}" if np.isfinite(hsep) else "—"
             row.set_text(pfx + f"{alt_s:>7}{gs_s:>7}{d_s:>8}")
 
@@ -418,8 +427,9 @@ class EncounterAnimation:
         self.alt_cursor.set_xdata([tm, tm])
         self.sep_cursor.set_xdata([tm, tm])
         for dot, a in zip(self.alt_dots, self.aircraft):
-            if np.isfinite(a.alt_ft[i]):
-                dot.set_data([tm], [a.alt_ft[i]])
+            alt_t = _ip(a.alt_ft)
+            if np.isfinite(alt_t):
+                dot.set_data([tm], [alt_t])
             else:
                 dot.set_data([], [])
 
@@ -427,11 +437,16 @@ class EncounterAnimation:
         intro_frames = int(2.0 * self.fps)
         fade_frames = int(1.2 * self.fps)
         if frame_no < intro_frames:
+            self.title_overlay.set_visible(True)
             self.title_overlay.set_alpha(1.0)
+            self.title_overlay.get_bbox_patch().set_alpha(0.65)
         elif frame_no < intro_frames + fade_frames:
-            self.title_overlay.set_alpha(1.0 - (frame_no - intro_frames) / fade_frames)
+            alpha = 1.0 - (frame_no - intro_frames) / fade_frames
+            self.title_overlay.set_visible(True)
+            self.title_overlay.set_alpha(alpha)
+            self.title_overlay.get_bbox_patch().set_alpha(alpha * 0.65)
         else:
-            self.title_overlay.set_alpha(0.0)
+            self.title_overlay.set_visible(False)
 
     # ------------------------------------------------------------------
     def render(self, out_path, crf=18, preset="medium", frame_range=None):

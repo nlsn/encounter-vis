@@ -176,16 +176,40 @@ class SatelliteBasemap:
 
 
 class OfflineBasemap:
-    """Schematic dark basemap: land, approximate rivers/highways, DC diamond."""
+    """Schematic dark basemap: land, OSM roads (cached), rivers, DC diamond."""
 
-    attribution = "Schematic basemap: rivers/highways approximate (~0.5-2 km); landmarks at surveyed coordinates"
+    # Road style by highway= type: (line width, hex color)
+    ROAD_STYLE = {
+        "motorway": (2.5, "#506070"),
+        "trunk":    (2.0, "#445560"),
+        "primary":  (1.8, "#3d4a58"),
+        "secondary":(1.4, "#334050"),
+        "tertiary": (1.0, "#2c3848"),
+    }
 
     LAND = "#141b22"
     WATER = "#0e2a3d"
-    ROAD = "#3d4a58"
-    ROAD_LABEL = "#8798a8"
+
+    def __init__(self, cache_dir, bbox_lonlat):
+        from . import osm as _osm
+        cache_path = os.path.join(cache_dir, "osm_roads.json")
+        self._osm_roads = None
+        self._hand_roads = False
+        try:
+            self._osm_roads = _osm.fetch_roads(bbox_lonlat, cache_path)
+        except Exception as e:
+            print(f"  OSM road fetch failed ({e}); falling back to schematic roads",
+                  flush=True)
+            self._hand_roads = True
+
+    @property
+    def attribution(self):
+        if self._osm_roads is not None:
+            return "Road data © OpenStreetMap contributors — schematic basemap"
+        return "Schematic basemap: rivers/highways approximate (~0.5-2 km); landmarks at surveyed coordinates"
 
     def install(self, ax):
+        from matplotlib.collections import LineCollection
         from matplotlib.patches import Polygon as MplPolygon
 
         ax.set_facecolor(self.LAND)
@@ -210,19 +234,42 @@ class OfflineBasemap:
             )
             ax.add_patch(poly)
 
-        # Highways.
-        for _, pts in lm.HIGHWAYS:
-            lat = np.array([p[0] for p in pts])
-            lon = np.array([p[1] for p in pts])
-            x, y = merc_xy(lon, lat)
-            ax.plot(x, y, color=self.ROAD, lw=2.2, zorder=0.3, solid_capstyle="round")
-
-        for text, lat, lon, rot in lm.HIGHWAY_LABELS:
-            x, y = merc_xy(lon, lat)
-            ax.text(
-                x, y, text, color=self.ROAD_LABEL, fontsize=8.5, rotation=rot,
-                ha="center", va="center", zorder=0.4, style="italic",
-            )
+        # Roads: OSM vector data when available, schematic fallback otherwise.
+        if self._osm_roads is not None:
+            # Draw each highway type as a LineCollection for efficiency.
+            by_type = {k: [] for k in self.ROAD_STYLE}
+            for road in self._osm_roads:
+                hw = road["highway"]
+                if hw not in by_type:
+                    continue
+                lons = [c[0] for c in road["coords"]]
+                lats = [c[1] for c in road["coords"]]
+                xs, ys = merc_xy(np.array(lons), np.array(lats))
+                by_type[hw].append(list(zip(xs, ys)))
+            for hw, segs in by_type.items():
+                if not segs:
+                    continue
+                lw, color = self.ROAD_STYLE[hw]
+                ax.add_collection(LineCollection(
+                    segs, colors=color, linewidths=lw,
+                    capstyle="round", zorder=0.3,
+                ))
+        else:
+            # Hand-digitized fallback.
+            ROAD = "#3d4a58"
+            ROAD_LABEL = "#8798a8"
+            for _, pts in lm.HIGHWAYS:
+                lat = np.array([p[0] for p in pts])
+                lon = np.array([p[1] for p in pts])
+                x, y = merc_xy(lon, lat)
+                ax.plot(x, y, color=ROAD, lw=2.2, zorder=0.3,
+                        solid_capstyle="round")
+            for text, lat, lon, rot in lm.HIGHWAY_LABELS:
+                x, y = merc_xy(lon, lat)
+                ax.text(
+                    x, y, text, color=ROAD_LABEL, fontsize=8.5, rotation=rot,
+                    ha="center", va="center", zorder=0.4, style="italic",
+                )
 
         # Original federal district boundary diamond (10 mi square).
         corners_lat = [38.9959, 38.8927, 38.7882, 38.8929, 38.9959]
@@ -236,7 +283,7 @@ class OfflineBasemap:
 
 def make_basemap(mode, bbox_wide, bbox_tight, cache_dir):
     if mode == "offline":
-        return OfflineBasemap()
+        return OfflineBasemap(cache_dir, bbox_wide)
     if mode in PROVIDERS:
         return SatelliteBasemap(mode, bbox_wide, bbox_tight, cache_dir)
     raise ValueError(f"Unknown basemap mode: {mode}")

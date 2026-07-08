@@ -38,7 +38,8 @@ def default_speed_profile(t_start, t_end, t_cpa):
         SpeedSegment(clamp(utc(17, 13, 55)), clamp(slow0), 8.0),
         SpeedSegment(clamp(slow0),       slow1, 3.0),
         SpeedSegment(slow1,              utc(17, 22, 30), 30.0),
-        SpeedSegment(utc(17, 22, 30),    t_end, 70.0),
+        SpeedSegment(utc(17, 22, 30),    utc(17, 50, 0),  90.0),  # holding loops
+        SpeedSegment(utc(17, 50, 0),     t_end,           50.0),  # final approach + landing
     ]
     return [s for s in segs if s.t1 > s.t0]
 
@@ -73,13 +74,19 @@ class CameraKey:
 
 
 def default_camera_keys(t_start, t_end, t_cpa, cpa_lat, cpa_lon):
-    """Mall approach -> tight on encounter -> medium -> wide hold -> touchdown."""
+    """Wide intro -> Mall approach -> tight on encounter -> medium -> hold -> touchdown."""
+    # At 17:11:00 SAM963 is at (~39.09, -76.96) and F-5s are at (~38.89, -77.31),
+    # both outside the mall view. intro is wide enough to contain both.
+    intro  = (38.97, -77.115, 45000.0)
     mall   = (38.878, -76.995, 30000.0)
     tight  = (cpa_lat - 0.004, cpa_lon + 0.002, 20000.0)  # wider: keeps 5-ship in frame
     medium = (38.870, -76.930, 42000.0)
-    hold   = (38.860, -76.900, 55000.0)  # wide view: covers hold + Andrews approach
+    # SAM963 holds NW of Andrews (~39.09, -77.15); hold view covers both.
+    hold     = (38.95, -77.02, 70000.0)
+    approach = (38.88, -76.92, 45000.0)  # tighter for final approach corridor
     keys = [
-        CameraKey(t_start,              *mall),
+        CameraKey(t_start,              *intro),
+        CameraKey(utc(17, 12, 0),       *intro),
         CameraKey(utc(17, 12, 30),      *mall),
         CameraKey(utc(17, 13, 55),      *mall),
         CameraKey(t_cpa - 55.0,        *tight),
@@ -87,7 +94,8 @@ def default_camera_keys(t_start, t_end, t_cpa, cpa_lat, cpa_lon):
         CameraKey(utc(17, 18, 0),      *medium),
         CameraKey(utc(17, 22, 30),     *medium),
         CameraKey(utc(17, 23, 30),     *hold),
-        CameraKey(utc(17, 55, 30),     *hold),
+        CameraKey(utc(17, 50, 0),      *hold),
+        CameraKey(utc(17, 52, 0),      *approach),
         CameraKey(t_end,               38.81, -76.87, 20000.0),
     ]
     # Drop keys before t_start (handles non-default start times).
